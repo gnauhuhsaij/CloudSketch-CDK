@@ -1,35 +1,50 @@
-import { awsResources } from '../data/awsResources';
+import { Plus } from 'lucide-react';
+import type { SavedProjectSummary } from '../types';
 
-export function Sidebar() {
+type SidebarProps = {
+  projects: SavedProjectSummary[];
+  activeProjectId?: string;
+  isDirty: boolean;
+  onNewBoard: () => void;
+  onProjectSelect: (projectId: string) => void;
+};
+
+function formatUpdatedAt(value: number) {
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(value);
+}
+
+export function Sidebar({ projects, activeProjectId, isDirty, onNewBoard, onProjectSelect }: SidebarProps) {
   return (
-    <aside className="sidebar">
-      <div>
-        <p className="eyebrow">Resource Palette</p>
-        <h2>AWS building blocks</h2>
+    <aside className="sidebar project-sidebar">
+      <div className="project-sidebar-header">
+        <div>
+          <p className="eyebrow">Projects</p>
+          <h2>History</h2>
+        </div>
       </div>
-      <div className="resource-list">
-        {awsResources.map((resource) => {
-          const Icon = resource.Icon;
-          return (
-            <div
-              className="resource-card"
-              draggable
-              key={resource.type}
-              onDragStart={(event) => {
-                event.dataTransfer.setData('application/infracanvas-resource', resource.type);
-                event.dataTransfer.effectAllowed = 'move';
-              }}
+      <button type="button" className="history-new-board" onClick={onNewBoard}>
+        <Plus size={16} />
+        New board
+      </button>
+      <div className="project-history-list">
+        {projects.length === 0 ? (
+          <p className="history-empty">Saved boards will appear here.</p>
+        ) : (
+          projects.map((project) => (
+            <button
+              type="button"
+              key={project.id}
+              className={`history-project ${project.id === activeProjectId ? 'active' : ''}`}
+              onClick={() => onProjectSelect(project.id)}
             >
-              <span className="resource-icon" style={{ color: resource.color }}>
-                <Icon size={20} />
-              </span>
-              <span>
-                <strong>{resource.label}</strong>
-                <small>{resource.description}</small>
-              </span>
-            </div>
-          );
-        })}
+              <span>{project.name}</span>
+              <small>
+                {formatUpdatedAt(project.updatedAt)}
+                {project.id === activeProjectId && isDirty ? ' • unsaved' : ''}
+              </small>
+            </button>
+          ))
+        )}
       </div>
     </aside>
   );

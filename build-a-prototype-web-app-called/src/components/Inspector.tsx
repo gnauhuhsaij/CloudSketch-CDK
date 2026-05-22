@@ -162,6 +162,10 @@ const fieldDetails: Partial<Record<`${AwsResourceType}.${string}`, DetailTopic>>
     title: 'S3 key',
     body: 'The object key where the script should be uploaded in S3. The worker VM downloads this key before running the script.',
   },
+  'textBoard.body': {
+    title: 'Text',
+    body: 'Freeform notes that live on the canvas. This does not generate CDK and cannot connect to infrastructure resources.',
+  },
 };
 
 function resourceFieldDetail(resourceType: AwsResourceType, resourceLabel: string, fieldLabel: string, fieldKey: string): DetailTopic {
@@ -260,6 +264,11 @@ export function Inspector({ node, edge, nodes, onUpdateNode, onUpdateEdge }: Ins
                     </option>
                   ))}
                 </select>
+              ) : field.type === 'textarea' ? (
+                <textarea
+                  value={String(node.data.config[field.key] ?? '')}
+                  onChange={(event) => onUpdateNode(node.id, { config: { [field.key]: event.target.value } })}
+                />
               ) : (
                 <input
                   type={field.type}

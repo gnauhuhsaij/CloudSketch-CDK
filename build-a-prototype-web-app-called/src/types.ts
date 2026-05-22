@@ -10,7 +10,8 @@ export type AwsResourceType =
   | 'ec2'
   | 'eventBridge'
   | 'iamRole'
-  | 'scriptAsset';
+  | 'scriptAsset'
+  | 'textBoard';
 
 export type Severity = 'error' | 'warning' | 'info';
 
@@ -76,4 +77,10 @@ export type ValidationIssue = {
   message: string;
   cdkHint?: string;
   requiredPermission?: string;
+};
+
+export type SavedProjectSummary = {
+  id: string;
+  name: string;
+  updatedAt: number;
 };

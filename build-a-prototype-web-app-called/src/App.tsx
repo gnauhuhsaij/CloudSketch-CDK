@@ -21,10 +21,31 @@ import { generateCdkProject } from './generator/generateCdkProject';
 import { parseCdkStack } from './parser/parseCdkStack';
 import { getDefaultCdkAction } from './rules/cdkActions';
 import { validateGraph } from './rules/validateGraph';
-import type { AwsResourceType, GraphModel, InfraEdge, InfraNode, ValidationIssue } from './types';
+import type { AwsResourceType, GraphModel, InfraEdge, InfraNode, SavedProjectSummary, ValidationIssue } from './types';
 
 const BOARD_STORAGE_KEY = 'infracanvas.board.v1';
+const PROJECTS_STORAGE_KEY = 'infracanvas.projects.v1';
+const ACTIVE_PROJECT_STORAGE_KEY = 'infracanvas.activeProject.v1';
+const DRAFT_STORAGE_KEY = 'infracanvas.draft.v1';
 const HISTORY_LIMIT = 80;
+
+type SavedProject = SavedProjectSummary & {
+  graph: GraphModel;
+};
+
+type InitialBoard = {
+  nodes: InfraNode[];
+  edges: InfraEdge[];
+  projects: SavedProject[];
+  activeProjectId?: string;
+  savedSnapshot: string;
+};
+
+type PendingBoardAction = {
+  title: string;
+  message: string;
+  action: () => void;
+};
 
 function nodeName(type: AwsResourceType, count: number) {
   return `${resourceByType[type].label} ${count}`;
@@ -37,7 +58,15 @@ function toGraph(nodes: InfraNode[], edges: InfraEdge[]): GraphModel {
       type: node.data.resourceType,
       name: node.data.label,
       position: node.position,
-      config: node.data.config,
+      config: {
+        ...node.data.config,
+        ...(node.data.resourceType === 'textBoard'
+          ? {
+              width: node.width || node.measured?.width || node.data.config.width,
+              height: node.height || node.measured?.height || node.data.config.height,
+            }
+          : {}),
+      },
     })),
     edges: edges.map((edge) => ({
       id: edge.id,
@@ -182,10 +211,17 @@ function applyGraphFocus(nodes: InfraNode[], edges: InfraEdge[], selectedNodeId?
 
 function makeNode(id: string, type: AwsResourceType, label: string, position: { x: number; y: number }, config = {}): InfraNode {
   const resource = resourceByType[type];
+  const typedConfig = config as Record<string, string | number | boolean>;
   return {
     id,
     type: 'infraNode',
     position,
+    ...(type === 'textBoard'
+      ? {
+          width: Number(typedConfig.width || 260),
+          height: Number(typedConfig.height || 150),
+        }
+      : {}),
     data: {
       resourceType: type,
       label,
@@ -216,20 +252,71 @@ function fromGraph(graph: GraphModel) {
   return { nodes, edges };
 }
 
-function loadSavedBoard() {
-  if (typeof window === 'undefined') return { nodes: [] as InfraNode[], edges: [] as InfraEdge[] };
+function emptyGraph(): GraphModel {
+  return { nodes: [], edges: [] };
+}
+
+function graphSnapshot(graph: GraphModel) {
+  return JSON.stringify(graph);
+}
+
+function isGraphEmpty(graph: GraphModel) {
+  return graph.nodes.length === 0 && graph.edges.length === 0;
+}
+
+function readProjects() {
+  if (typeof window === 'undefined') return [] as SavedProject[];
 
   try {
-    const raw = window.localStorage.getItem(BOARD_STORAGE_KEY);
-    if (!raw) return { nodes: [] as InfraNode[], edges: [] as InfraEdge[] };
-    const graph = JSON.parse(raw) as GraphModel;
-    if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) return { nodes: [], edges: [] };
-    const board = fromGraph(graph);
-    const issues = validateGraph(graph);
-    return { nodes: board.nodes, edges: decorateEdges(board.edges, issues, board.nodes) };
+    const raw = window.localStorage.getItem(PROJECTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as SavedProject[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((project) => project.id && project.name && project.graph);
   } catch {
-    return { nodes: [] as InfraNode[], edges: [] as InfraEdge[] };
+    return [];
   }
+}
+
+function projectNameFromGraph(graph: GraphModel) {
+  const mainNode = graph.nodes.find((node) => node.type === 'apiGateway') || graph.nodes[0];
+  return mainNode ? `${mainNode.name} board` : 'Untitled board';
+}
+
+function loadGraphFromStorage(projects: SavedProject[]) {
+  if (typeof window === 'undefined') return { graph: emptyGraph(), activeProjectId: undefined, savedSnapshot: graphSnapshot(emptyGraph()) };
+
+  try {
+    const draftRaw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    const activeProjectId = window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY) || undefined;
+    const activeProject = projects.find((project) => project.id === activeProjectId);
+    const savedSnapshot = activeProject ? graphSnapshot(activeProject.graph) : graphSnapshot(emptyGraph());
+
+    if (draftRaw) {
+      const draft = JSON.parse(draftRaw) as GraphModel;
+      if (Array.isArray(draft.nodes) && Array.isArray(draft.edges)) return { graph: draft, activeProjectId, savedSnapshot };
+    }
+
+    if (activeProject) return { graph: activeProject.graph, activeProjectId, savedSnapshot };
+
+    const legacyRaw = window.localStorage.getItem(BOARD_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacy = JSON.parse(legacyRaw) as GraphModel;
+      if (Array.isArray(legacy.nodes) && Array.isArray(legacy.edges)) return { graph: legacy, activeProjectId: undefined, savedSnapshot: graphSnapshot(emptyGraph()) };
+    }
+  } catch {
+    return { graph: emptyGraph(), activeProjectId: undefined, savedSnapshot: graphSnapshot(emptyGraph()) };
+  }
+
+  return { graph: emptyGraph(), activeProjectId: undefined, savedSnapshot: graphSnapshot(emptyGraph()) };
+}
+
+function loadSavedBoard(): InitialBoard {
+  const projects = readProjects();
+  const { graph, activeProjectId, savedSnapshot } = loadGraphFromStorage(projects);
+  const board = fromGraph(graph);
+  const issues = validateGraph(graph);
+  return { nodes: board.nodes, edges: decorateEdges(board.edges, issues, board.nodes), projects, activeProjectId, savedSnapshot };
 }
 
 function InfraCanvasApp() {
@@ -239,16 +326,26 @@ function InfraCanvasApp() {
   const [issues, setIssues] = useState<ValidationIssue[]>(() => validateGraph(toGraph(initialBoardRef.current.nodes, initialBoardRef.current.edges)));
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
+  const [focusedNodeId, setFocusedNodeId] = useState<string>();
+  const [focusedEdgeId, setFocusedEdgeId] = useState<string>();
   const [generatedFiles, setGeneratedFiles] = useState<Record<string, string>>();
+  const [projects, setProjects] = useState<SavedProject[]>(() => initialBoardRef.current.projects);
+  const [activeProjectId, setActiveProjectId] = useState<string | undefined>(() => initialBoardRef.current.activeProjectId);
+  const [savedSnapshot, setSavedSnapshot] = useState(() => initialBoardRef.current.savedSnapshot);
+  const [pendingBoardAction, setPendingBoardAction] = useState<PendingBoardAction>();
   const undoStackRef = useRef<GraphModel[]>([]);
   const redoStackRef = useRef<GraphModel[]>([]);
   const { screenToFlowPosition } = useReactFlow();
 
+  const currentGraph = useMemo(() => toGraph(nodes, edges), [nodes, edges]);
+  const currentSnapshot = useMemo(() => graphSnapshot(currentGraph), [currentGraph]);
+  const isDirty = currentSnapshot !== savedSnapshot;
+  const hasBoardContent = !isGraphEmpty(currentGraph);
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId), [nodes, selectedNodeId]);
   const selectedEdge = useMemo(() => edges.find((edge) => edge.id === selectedEdgeId), [edges, selectedEdgeId]);
   const { focusedNodes, focusedEdges } = useMemo(
-    () => applyGraphFocus(nodes, edges, selectedNodeId, selectedEdgeId),
-    [nodes, edges, selectedNodeId, selectedEdgeId],
+    () => applyGraphFocus(nodes, edges, focusedNodeId, focusedEdgeId),
+    [nodes, edges, focusedNodeId, focusedEdgeId],
   );
 
   const runValidation = useCallback(
@@ -262,13 +359,34 @@ function InfraCanvasApp() {
   );
 
   useEffect(() => {
-    window.localStorage.setItem(BOARD_STORAGE_KEY, JSON.stringify(toGraph(nodes, edges)));
-  }, [nodes, edges]);
+    window.localStorage.setItem(BOARD_STORAGE_KEY, currentSnapshot);
+    window.localStorage.setItem(DRAFT_STORAGE_KEY, currentSnapshot);
+  }, [currentSnapshot]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    if (activeProjectId) window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, activeProjectId);
+    else window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY);
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      if (!isDirty || !hasBoardContent) return;
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isDirty, hasBoardContent]);
 
   const pushHistory = useCallback(() => {
-    undoStackRef.current = [...undoStackRef.current.slice(-HISTORY_LIMIT + 1), toGraph(nodes, edges)];
+    undoStackRef.current = [...undoStackRef.current.slice(-HISTORY_LIMIT + 1), currentGraph];
     redoStackRef.current = [];
-  }, [nodes, edges]);
+  }, [currentGraph]);
 
   const applyBoard = useCallback((nextNodes: InfraNode[], nextEdges: InfraEdge[], options: { record?: boolean } = {}) => {
     if (options.record) pushHistory();
@@ -278,12 +396,14 @@ function InfraCanvasApp() {
     setIssues(nextIssues);
     setSelectedNodeId(undefined);
     setSelectedEdgeId(undefined);
+    setFocusedNodeId(undefined);
+    setFocusedEdgeId(undefined);
   }, [pushHistory]);
 
   const undo = useCallback(() => {
     const previous = undoStackRef.current.pop();
     if (!previous) return;
-    redoStackRef.current = [...redoStackRef.current.slice(-HISTORY_LIMIT + 1), toGraph(nodes, edges)];
+    redoStackRef.current = [...redoStackRef.current.slice(-HISTORY_LIMIT + 1), currentGraph];
     const board = fromGraph(previous);
     const nextIssues = validateGraph(previous);
     setNodes(board.nodes);
@@ -291,12 +411,14 @@ function InfraCanvasApp() {
     setIssues(nextIssues);
     setSelectedNodeId(undefined);
     setSelectedEdgeId(undefined);
-  }, [nodes, edges]);
+    setFocusedNodeId(undefined);
+    setFocusedEdgeId(undefined);
+  }, [currentGraph]);
 
   const redo = useCallback(() => {
     const next = redoStackRef.current.pop();
     if (!next) return;
-    undoStackRef.current = [...undoStackRef.current.slice(-HISTORY_LIMIT + 1), toGraph(nodes, edges)];
+    undoStackRef.current = [...undoStackRef.current.slice(-HISTORY_LIMIT + 1), currentGraph];
     const board = fromGraph(next);
     const nextIssues = validateGraph(next);
     setNodes(board.nodes);
@@ -304,7 +426,9 @@ function InfraCanvasApp() {
     setIssues(nextIssues);
     setSelectedNodeId(undefined);
     setSelectedEdgeId(undefined);
-  }, [nodes, edges]);
+    setFocusedNodeId(undefined);
+    setFocusedEdgeId(undefined);
+  }, [currentGraph]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -338,6 +462,7 @@ function InfraCanvasApp() {
   const onConnect = useCallback((connection: Connection) => {
     const source = nodes.find((node) => node.id === connection.source);
     const target = nodes.find((node) => node.id === connection.target);
+    if (source?.data.resourceType === 'textBoard' || target?.data.resourceType === 'textBoard') return;
     pushHistory();
     setEdges((current) =>
       routeEdges(
@@ -358,13 +483,12 @@ function InfraCanvasApp() {
     );
   }, [nodes, pushHistory]);
 
-  const onDropResource = useCallback(
-    (type: string, event: DragEvent<HTMLDivElement>) => {
+  const addResourceAt = useCallback(
+    (type: string, position: { x: number; y: number }) => {
       const resource = resourceByType[type as AwsResourceType];
       if (!resource) return;
 
       const sameTypeCount = nodes.filter((node) => node.data.resourceType === type).length + 1;
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       const id = `${type}-${Date.now()}`;
       const label = nodeName(type as AwsResourceType, sameTypeCount);
 
@@ -384,7 +508,15 @@ function InfraCanvasApp() {
         },
       ]);
     },
-    [nodes, pushHistory, screenToFlowPosition],
+    [nodes, pushHistory],
+  );
+
+  const onDropResource = useCallback(
+    (type: string, event: DragEvent<HTMLDivElement>) => {
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      addResourceAt(type, position);
+    },
+    [addResourceAt, screenToFlowPosition],
   );
 
   function updateNode(nodeId: string, patch: { label?: string; config?: Record<string, string | number | boolean> }) {
@@ -434,6 +566,60 @@ function InfraCanvasApp() {
 
   function clearCanvas() {
     applyBoard([], [], { record: true });
+    setActiveProjectId(undefined);
+    setSavedSnapshot(graphSnapshot(emptyGraph()));
+  }
+
+  function saveCurrentProject() {
+    const existingProject = projects.find((project) => project.id === activeProjectId);
+    const fallbackName = existingProject?.name || projectNameFromGraph(currentGraph);
+    const name = existingProject?.name || window.prompt('Save this board as', fallbackName)?.trim();
+    if (!name) return false;
+
+    const project: SavedProject = {
+      id: existingProject?.id || globalThis.crypto?.randomUUID?.() || `project-${Date.now()}`,
+      name,
+      updatedAt: Date.now(),
+      graph: currentGraph,
+    };
+
+    setProjects((current) => {
+      const next = [project, ...current.filter((item) => item.id !== project.id)];
+      return next.sort((a, b) => b.updatedAt - a.updatedAt);
+    });
+    setActiveProjectId(project.id);
+    setSavedSnapshot(currentSnapshot);
+    return true;
+  }
+
+  function openGraph(graph: GraphModel, nextActiveProjectId?: string, nextSavedSnapshot = graphSnapshot(emptyGraph())) {
+    const board = fromGraph(graph);
+    applyBoard(board.nodes, board.edges, { record: true });
+    setActiveProjectId(nextActiveProjectId);
+    setSavedSnapshot(nextSavedSnapshot);
+  }
+
+  function requestBoardReplacement(action: () => void, title = 'Overwrite current board?') {
+    if (!hasBoardContent || !isDirty) {
+      action();
+      return;
+    }
+
+    setPendingBoardAction({
+      title,
+      message: 'The current board has unsaved changes. Save it before leaving this workspace?',
+      action,
+    });
+  }
+
+  function startNewBoard() {
+    requestBoardReplacement(() => openGraph(emptyGraph(), undefined, graphSnapshot(emptyGraph())), 'Start a new board?');
+  }
+
+  function selectProject(projectId: string) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) return;
+    requestBoardReplacement(() => openGraph(project.graph, project.id, graphSnapshot(project.graph)), `Open ${project.name}?`);
   }
 
   function loadWorkflowExample() {
@@ -482,13 +668,19 @@ function InfraCanvasApp() {
       makeEdge('vm-table', 'vm', 'table', 'permission'),
     ];
 
-    applyBoard(exampleNodes, exampleEdges, { record: true });
+    requestBoardReplacement(() => {
+      const graph = toGraph(exampleNodes, exampleEdges);
+      openGraph(graph, undefined, graphSnapshot(emptyGraph()));
+    }, 'Load the sample workflow?');
   }
 
   async function loadStackFile(file: File) {
     const source = await file.text();
     const board = parseCdkStack(source);
-    applyBoard(board.nodes, board.edges, { record: true });
+    requestBoardReplacement(() => {
+      const graph = toGraph(board.nodes, board.edges);
+      openGraph(graph, undefined, graphSnapshot(emptyGraph()));
+    }, `Load ${file.name}?`);
   }
 
   function generateProject() {
@@ -502,6 +694,8 @@ function InfraCanvasApp() {
     if (!issue.edgeId) return;
     setSelectedNodeId(undefined);
     setSelectedEdgeId(issue.edgeId);
+    setFocusedNodeId(undefined);
+    setFocusedEdgeId(issue.edgeId);
     setEdges((current) => current.map((edge) => ({ ...edge, selected: edge.id === issue.edgeId })));
     setNodes((current) => current.map((node) => ({ ...node, selected: false })));
   }
@@ -513,28 +707,79 @@ function InfraCanvasApp() {
         onGenerate={generateProject}
         onLoadExample={loadWorkflowExample}
         onLoadStackFile={loadStackFile}
-        onClear={clearCanvas}
+        onSaveProject={saveCurrentProject}
       />
       <div className="workspace">
-        <Sidebar />
-        <Canvas
-          nodes={focusedNodes}
-          edges={focusedEdges}
-          selectedNodeId={selectedNodeId}
-          selectedEdgeId={selectedEdgeId}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onDropResource={onDropResource}
-          onSelectionChange={({ nodes: nextNodes, edges: nextEdges }) => {
-            setSelectedNodeId(nextNodes[0]?.id);
-            setSelectedEdgeId(nextEdges[0]?.id);
-          }}
+        <Sidebar
+          projects={projects.map(({ id, name, updatedAt }) => ({ id, name, updatedAt }))}
+          activeProjectId={activeProjectId}
+          isDirty={isDirty}
+          onNewBoard={startNewBoard}
+          onProjectSelect={selectProject}
         />
-        <Inspector node={selectedNode} edge={selectedNode ? undefined : selectedEdge} nodes={nodes} onUpdateNode={updateNode} onUpdateEdge={updateEdge} />
+        <div className="main-region">
+          <div className="board-region">
+            <Canvas
+              nodes={focusedNodes}
+              edges={focusedEdges}
+              selectedNodeId={focusedNodeId}
+              selectedEdgeId={focusedEdgeId}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onAddResource={addResourceAt}
+              onDropResource={onDropResource}
+              onSelectionChange={({ nodes: nextNodes, edges: nextEdges }) => {
+                setSelectedNodeId(nextNodes[0]?.id);
+                setSelectedEdgeId(nextEdges[0]?.id);
+              }}
+              onFocusChange={({ nodes: nextNodes, edges: nextEdges }) => {
+                setFocusedNodeId(nextNodes[0]?.id);
+                setFocusedEdgeId(nextEdges[0]?.id);
+              }}
+            />
+            <Inspector node={selectedNode} edge={selectedNode ? undefined : selectedEdge} nodes={nodes} onUpdateNode={updateNode} onUpdateEdge={updateEdge} />
+          </div>
+          <ValidationPanel issues={issues} onIssueSelect={selectIssue} />
+        </div>
       </div>
-      <ValidationPanel issues={issues} onIssueSelect={selectIssue} />
       {generatedFiles && <CodeModal files={generatedFiles} onClose={() => setGeneratedFiles(undefined)} />}
+      {pendingBoardAction && (
+        <div className="confirm-modal-backdrop" role="presentation">
+          <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <p className="eyebrow">Workspace</p>
+            <h2 id="confirm-title">{pendingBoardAction.title}</h2>
+            <p>{pendingBoardAction.message}</p>
+            <div className="confirm-modal-actions">
+              {isDirty && (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => {
+                    if (!saveCurrentProject()) return;
+                    pendingBoardAction.action();
+                    setPendingBoardAction(undefined);
+                  }}
+                >
+                  Save and continue
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  pendingBoardAction.action();
+                  setPendingBoardAction(undefined);
+                }}
+              >
+                Continue without saving
+              </button>
+              <button type="button" onClick={() => setPendingBoardAction(undefined)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

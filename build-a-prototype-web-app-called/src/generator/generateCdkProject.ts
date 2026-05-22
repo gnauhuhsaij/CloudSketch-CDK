@@ -155,6 +155,7 @@ function synthesizeResource(node: GraphModel['nodes'][number], imports: UsedImpo
       `// Script asset ${node.name}: ${config.localPath || 'scripts/process-input.sh'}`,
       `// Upload to S3 key ${config.s3Key || 'scripts/process-input.sh'} using s3deploy.BucketDeployment or your deployment pipeline.`,
     ],
+    textBoard: [`// Note: ${String(config.body || node.name).replace(/\n/g, '\n// ')}`],
   };
 
   const importKeyByType: Record<AwsResourceType, keyof UsedImports> = {
@@ -168,8 +169,9 @@ function synthesizeResource(node: GraphModel['nodes'][number], imports: UsedImpo
     eventBridge: 'events',
     iamRole: 'iam',
     scriptAsset: 's3deploy',
+    textBoard: 'path',
   };
-  imports[importKeyByType[node.type]] = true;
+  if (node.type !== 'textBoard') imports[importKeyByType[node.type]] = true;
 
   if (node.type === 'lambda') {
     imports.lambdaNodejs = true;
@@ -191,6 +193,7 @@ function synthesizeEdge(
   const source = graph.nodes.find((node) => node.id === edge.source);
   const target = graph.nodes.find((node) => node.id === edge.target);
   if (!source || !target) return `// Skipped ${edge.id}: source or target resource was missing.`;
+  if (source.type === 'textBoard' || target.type === 'textBoard') return `// Skipped ${edge.id}: text boards do not generate CDK relationships.`;
 
   const sourceRef = refs.get(source.id);
   const targetRef = refs.get(target.id);

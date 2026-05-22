@@ -1,4 +1,4 @@
-import { Download, FileCode2, GitBranch, ShieldCheck, Trash2 } from 'lucide-react';
+import { Download, FileCode2, GitBranch, Save, ShieldCheck } from 'lucide-react';
 import { useRef } from 'react';
 
 type ToolbarProps = {
@@ -6,10 +6,16 @@ type ToolbarProps = {
   onGenerate: () => void;
   onLoadExample: () => void;
   onLoadStackFile: (file: File) => void | Promise<void>;
-  onClear: () => void;
+  onSaveProject: () => void;
 };
 
-export function Toolbar({ onValidate, onGenerate, onLoadExample, onLoadStackFile, onClear }: ToolbarProps) {
+export function Toolbar({
+  onValidate,
+  onGenerate,
+  onLoadExample,
+  onLoadStackFile,
+  onSaveProject,
+}: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -22,6 +28,10 @@ export function Toolbar({ onValidate, onGenerate, onLoadExample, onLoadStackFile
         </div>
       </div>
       <nav className="toolbar-actions">
+        <button type="button" onClick={onSaveProject}>
+          <Save size={17} />
+          Save
+        </button>
         <button type="button" onClick={onValidate}>
           <ShieldCheck size={17} />
           Validate
@@ -49,10 +59,6 @@ export function Toolbar({ onValidate, onGenerate, onLoadExample, onLoadStackFile
         <button type="button" onClick={onLoadExample}>
           <GitBranch size={17} />
           Sample workflow
-        </button>
-        <button type="button" className="danger" onClick={onClear}>
-          <Trash2 size={17} />
-          Clear canvas
         </button>
       </nav>
     </header>

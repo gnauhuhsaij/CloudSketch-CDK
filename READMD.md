@@ -1,1 +1,0 @@
-# CloudSketch-CDK

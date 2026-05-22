@@ -10,6 +10,13 @@ type ParsedResource = {
   config?: Record<string, string | number | boolean>;
 };
 
+type ConstructMatch = {
+  variable: string;
+  constructorName: string;
+  constructId: string;
+  body: string;
+};
+
 function titleFromIdentifier(value: string) {
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -62,6 +69,7 @@ function makeParsedNode(resource: ParsedResource, index: number): InfraNode {
     ec2: 5,
     sqs: 3,
     eventBridge: 1,
+    textBoard: 0,
   };
   const sameColumnOffset = index % 4;
 
@@ -92,6 +100,92 @@ function findResourceType(expression: string): AwsResourceType | undefined {
   if (/\bnew\s+events\.Rule\b/.test(expression)) return 'eventBridge';
   if (/\bnew\s+s3deploy\.BucketDeployment\b/.test(expression)) return 'scriptAsset';
   return undefined;
+}
+
+function findCallEnd(source: string, startIndex: number) {
+  let depth = 0;
+  let quote: string | undefined;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = startIndex; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) quote = undefined;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+
+    if (char === '(') depth += 1;
+    if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+
+  return -1;
+}
+
+function extractConstructs(source: string): ConstructMatch[] {
+  const constructs: ConstructMatch[] = [];
+  const constructStart =
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+((?:[A-Za-z_$][\w$]*\.)?[A-Za-z_$][\w$]*)\s*\(\s*this\s*,\s*['"`]([^'"`]+)['"`]/g;
+
+  for (const match of source.matchAll(constructStart)) {
+    const [, variable, constructorName, constructId] = match;
+    const callStart = source.indexOf('(', match.index || 0);
+    const callEnd = callStart >= 0 ? findCallEnd(source, callStart) : -1;
+    if (callEnd < 0) continue;
+
+    constructs.push({
+      variable,
+      constructorName,
+      constructId,
+      body: source.slice(match.index || 0, callEnd + 1),
+    });
+  }
+
+  return constructs;
 }
 
 function resourceConfig(type: AwsResourceType, body: string) {
@@ -135,11 +229,8 @@ function resourceConfig(type: AwsResourceType, body: string) {
 
 export function parseCdkStack(source: string): { nodes: InfraNode[]; edges: InfraEdge[] } {
   const resources: ParsedResource[] = [];
-  const constructPattern =
-    /const\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+((?:[A-Za-z_$][\w$]*\.)?[A-Za-z_$][\w$]*)\s*\(\s*this\s*,\s*['"`]([^'"`]+)['"`]([\s\S]*?)\n\s*\);/g;
 
-  for (const match of source.matchAll(constructPattern)) {
-    const [, variable, constructorName, constructId, body] = match;
+  for (const { variable, constructorName, constructId, body } of extractConstructs(source)) {
     const type = findResourceType(`new ${constructorName}`);
     if (!type) continue;
     resources.push({
@@ -150,6 +241,15 @@ export function parseCdkStack(source: string): { nodes: InfraNode[]; edges: Infr
       config: resourceConfig(type, body),
     });
   }
+
+  resources
+    .filter((resource) => resource.type === 's3')
+    .forEach((resource) => {
+      const corsMatch = source.match(new RegExp(`${resource.variable}\\.addCorsRule\\((.*?)\\);`, 's'));
+      if (!corsMatch) return;
+      const origins = [...corsMatch[1].matchAll(/['"`](https?:\/\/[^'"`]+|\*)['"`]/g)].map((match) => match[1]).join(', ');
+      if (origins) resource.config = { ...resource.config, corsOrigins: origins };
+    });
 
   const hasBrowserFlow = /allowedOrigins|get-presigned-url|presigned|localhost:5173/i.test(source);
   if (hasBrowserFlow && !resources.some((resource) => resource.type === 'webClient')) {

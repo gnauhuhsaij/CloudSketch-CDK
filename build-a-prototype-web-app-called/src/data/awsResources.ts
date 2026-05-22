@@ -7,6 +7,7 @@ import {
   KeyRound,
   Monitor,
   Network,
+  NotebookText,
   ScrollText,
   RadioTower,
 } from 'lucide-react';
@@ -23,12 +24,26 @@ export type ResourceDefinition = {
   configFields: Array<{
     key: string;
     label: string;
-    type: 'text' | 'number' | 'select';
+    type: 'text' | 'number' | 'select' | 'textarea';
     options?: string[];
   }>;
 };
 
 export const awsResources: ResourceDefinition[] = [
+  {
+    type: 'textBoard',
+    label: 'Text board',
+    shortLabel: 'TXT',
+    description: 'Project notes and comments',
+    color: '#a3a3a3',
+    Icon: NotebookText,
+    defaultConfig: {
+      body: 'Describe this workflow, assumptions, open questions, or deployment notes.',
+      width: 260,
+      height: 150,
+    },
+    configFields: [{ key: 'body', label: 'Text', type: 'textarea' }],
+  },
   {
     type: 'webClient',
     label: 'Web UI',

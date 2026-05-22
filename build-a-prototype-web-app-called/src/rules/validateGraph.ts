@@ -28,6 +28,8 @@ export function validateGraph(graph: GraphModel): ValidationIssue[] {
     const source = nodesById.get(edge.source);
     const target = nodesById.get(edge.target);
 
+    if (source?.type === 'textBoard' || target?.type === 'textBoard') return;
+
     if (!source || !target) {
       issues.push({
         id: `missing-${edge.id}`,

@@ -10,12 +10,13 @@ import {
   type OnConnect,
   type OnEdgesChange,
   type OnNodesChange,
+  type XYPosition,
 } from '@xyflow/react';
 import { Expand, LocateFixed, Lock, Minus, Plus, Unlock } from 'lucide-react';
 import type { DragEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { InfraNode } from './InfraNode';
-import { resourceByType } from '../data/awsResources';
+import { awsResources, resourceByType } from '../data/awsResources';
 import type { InfraEdge, InfraNode as InfraNodeType } from '../types';
 
 const nodeTypes = { infraNode: InfraNode };
@@ -28,8 +29,10 @@ type CanvasProps = {
   onNodesChange: OnNodesChange<InfraNodeType>;
   onEdgesChange: OnEdgesChange<InfraEdge>;
   onConnect: OnConnect;
+  onAddResource: (type: string, position: XYPosition) => void;
   onDropResource: (type: string, event: DragEvent<HTMLDivElement>) => void;
   onSelectionChange: (selection: { nodes: InfraNodeType[]; edges: InfraEdge[] }) => void;
+  onFocusChange: (selection: { nodes: InfraNodeType[]; edges: InfraEdge[] }) => void;
 };
 
 export function Canvas({
@@ -40,13 +43,16 @@ export function Canvas({
   onNodesChange,
   onEdgesChange,
   onConnect,
+  onAddResource,
   onDropResource,
   onSelectionChange,
+  onFocusChange,
 }: CanvasProps) {
-  const { fitView, setCenter, zoomIn, zoomOut } = useReactFlow<InfraNodeType, InfraEdge>();
+  const { fitView, screenToFlowPosition, setCenter, zoomIn, zoomOut } = useReactFlow<InfraNodeType, InfraEdge>();
   const shellRef = useRef<HTMLElement>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const selectedNode = nodes.find((node) => node.id === selectedNodeId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
 
@@ -88,6 +94,16 @@ export function Canvas({
     });
   }
 
+  function addResourceFromPalette(type: string) {
+    const bounds = shellRef.current?.getBoundingClientRect();
+    const position = screenToFlowPosition({
+      x: (bounds?.left || 0) + (bounds?.width || window.innerWidth) / 2,
+      y: (bounds?.top || 0) + (bounds?.height || window.innerHeight) / 2,
+    });
+    onAddResource(type, position);
+    setIsPaletteOpen(false);
+  }
+
   return (
     <main className={`canvas-shell ${isFullscreen ? 'canvas-shell-fullscreen' : ''}`} ref={shellRef}>
       <ReactFlow
@@ -98,6 +114,12 @@ export function Canvas({
         onEdgesChange={onEdgesChange as (changes: EdgeChange<InfraEdge>[]) => void}
         onConnect={(connection: Connection) => onConnect(connection)}
         onSelectionChange={onSelectionChange}
+        onNodeDoubleClick={(_, node) => onFocusChange({ nodes: [node], edges: [] })}
+        onEdgeDoubleClick={(_, edge) => onFocusChange({ nodes: [], edges: [edge] })}
+        onPaneClick={() => {
+          onSelectionChange({ nodes: [], edges: [] });
+          onFocusChange({ nodes: [], edges: [] });
+        }}
         onDrop={(event) => {
           const type = event.dataTransfer.getData('application/infracanvas-resource');
           if (type) onDropResource(type, event);
@@ -123,6 +145,41 @@ export function Canvas({
         }}
       >
         <Background color="#2b2b2b" gap={22} />
+        <Panel position="top-left" className="canvas-add-panel">
+          <button
+            type="button"
+            className="canvas-add-button"
+            aria-label="Add component"
+            title="Add component"
+            onClick={() => setIsPaletteOpen((current) => !current)}
+          >
+            <Plus size={19} />
+          </button>
+          {isPaletteOpen && (
+            <div className="canvas-palette">
+              <div className="canvas-palette-header">
+                <strong>Add component</strong>
+                <span>Select one to place it on the board</span>
+              </div>
+              <div className="canvas-palette-list">
+                {awsResources.map((resource) => {
+                  const Icon = resource.Icon;
+                  return (
+                    <button type="button" key={resource.type} className="canvas-palette-item" onClick={() => addResourceFromPalette(resource.type)}>
+                      <span className="resource-icon" style={{ color: resource.color }}>
+                        <Icon size={18} />
+                      </span>
+                      <span>
+                        <strong>{resource.label}</strong>
+                        <small>{resource.description}</small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </Panel>
         <MiniMap
           className="canvas-minimap"
           position="bottom-right"
